@@ -1,0 +1,20 @@
+# Sample config for the WhatsApp bridge. Copy to config.yaml and edit.
+# ${ENV_VAR} placeholders are expanded from process env at startup;
+# ${ENV_VAR:-default} provides a fallback when the env var is unset.
+
+dataDir: ./data
+
+http:
+  port: 3000
+  # Required: protects /sessions/* routes (send, qr, pair). Without it those routes return 503.
+  bearerToken: ${BRIDGE_API_TOKEN}
+
+sessions:
+  - id: main
+    webhookUrl: https://your-consumer.example.com/whatsapp
+    webhookSecret: ${WEBHOOK_SECRET_MAIN}
+
+  # Add more entries (up to ~10) — one Baileys connection per session, isolated auth state.
+  # - id: support
+  #   webhookUrl: https://your-crm.example.com/whatsapp
+  #   webhookSecret: ${WEBHOOK_SECRET_SUPPORT}
