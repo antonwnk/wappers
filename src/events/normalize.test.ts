@@ -322,6 +322,71 @@ describe("normalizeMessage — group chats", () => {
   });
 });
 
+// ---- selfJid resolution ---------------------------------------------------
+
+describe("normalizeMessage — selfJid resolution", () => {
+  const noSelfCtx: NormalizeContext = { sessionId: "main", now: () => NOW };
+
+  it("normalizes incoming 1:1 text even when selfJid is unknown", () => {
+    // Real cause: startup/reconnect race where messages.upsert arrives before
+    // sock.user is populated. We must not drop these — they're irreplayable.
+    const out = normalizeMessage(makeRaw({ message: { conversation: "hi" } }), noSelfCtx);
+    expectValidEnvelope(out);
+    expect(out.type).toBe("message.received");
+    expect(out.message.senderJid).toBe(PEER_JID);
+  });
+
+  it("normalizes incoming group messages even when selfJid is unknown", () => {
+    const out = normalizeMessage(
+      makeRaw({
+        remoteJid: GROUP_JID,
+        participant: "333333333@s.whatsapp.net",
+        message: { conversation: "yo group" },
+      }),
+      noSelfCtx,
+    );
+    expectValidEnvelope(out);
+    expect(out.message.senderJid).toBe("333333333@s.whatsapp.net");
+  });
+
+  it("skips outgoing 1:1 messages when selfJid is unknown (can't attribute)", () => {
+    const out = normalizeMessage(
+      makeRaw({ fromMe: true, message: { conversation: "hi back" } }),
+      noSelfCtx,
+    );
+    expect(out).toBeNull();
+  });
+
+  it("uses selfJid for outgoing group messages with missing participant", () => {
+    // Baileys can emit fromMe group messages without participant set — falling back
+    // to chatJid would attribute authorship to the group itself, breaking analytics.
+    const out = normalizeMessage(
+      makeRaw({
+        remoteJid: GROUP_JID,
+        fromMe: true,
+        // participant intentionally omitted
+        message: { conversation: "from me, no participant" },
+      }),
+      ctx,
+    );
+    expectValidEnvelope(out);
+    expect(out.message.senderJid).toBe(SELF_JID);
+    expect(out.type).toBe("message.sent");
+  });
+
+  it("skips outgoing group messages with missing participant when selfJid is unknown", () => {
+    const out = normalizeMessage(
+      makeRaw({
+        remoteJid: GROUP_JID,
+        fromMe: true,
+        message: { conversation: "no attribution possible" },
+      }),
+      noSelfCtx,
+    );
+    expect(out).toBeNull();
+  });
+});
+
 // ---- mediaUrl wiring ------------------------------------------------------
 
 describe("normalizeMessage — media URL", () => {

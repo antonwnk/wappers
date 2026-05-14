@@ -201,17 +201,17 @@ export class Session {
     // 'notify' = real-time new message. 'append' / 'prepend' = historical sync we asked Baileys to skip.
     if (u.type !== "notify") return;
 
+    // selfJid may be undefined during a startup/reconnect race. Normalize handles that
+    // per-message: incoming messages still go through, only outgoing ones that need
+    // selfJid for attribution are skipped (returns null). Dropping the whole batch
+    // here would lose inbound messages permanently — they can't be replayed.
     const selfJid = this.getSelfJid();
-    if (!selfJid) {
-      this.log.warn("messages.upsert before self JID known — dropping batch");
-      return;
-    }
 
     for (const raw of u.messages) {
       try {
         const ev = normalizeMessage(raw as proto.IWebMessageInfo, {
           sessionId: this.id,
-          selfJid,
+          ...(selfJid ? { selfJid } : {}),
           ...(this.opts?.mediaUrlFor ? { mediaUrlFor: this.opts.mediaUrlFor } : {}),
         });
         if (ev) await this.deliver(ev);

@@ -14,9 +14,11 @@ import {
 
 export interface NormalizeContext {
   sessionId: string;
-  // The bridge's own JID (e.g. "1234567890@s.whatsapp.net"). Used to populate
-  // senderJid on outgoing 1:1 messages where Baileys leaves participant unset.
-  selfJid: string;
+  // The bridge's own JID (e.g. "1234567890@s.whatsapp.net"). Used to attribute
+  // outgoing messages where Baileys doesn't carry the sender. May be undefined
+  // during a startup/reconnect race; in that case outgoing messages are skipped
+  // (returns null) but incoming messages still normalize fine — they don't need it.
+  selfJid?: string;
   now?: () => Date;
   // Builds the lazy media-download URL exposed by the bridge HTTP server.
   // Returning null (or omitting the function) means the consumer cannot fetch bytes.
@@ -36,11 +38,10 @@ export function normalizeMessage(
   const fromMe = key.fromMe === true;
   const isGroup = chatJid.endsWith("@g.us");
 
-  const senderJid = isGroup
-    ? (key.participant ?? chatJid)
-    : fromMe
-      ? ctx.selfJid
-      : chatJid;
+  // Outgoing group messages can arrive with `participant` unset — fall back to selfJid
+  // rather than chatJid, which would misattribute authorship to the group itself.
+  const senderJid = resolveSenderJid({ isGroup, fromMe, chatJid, participant: key.participant ?? null, selfJid: ctx.selfJid });
+  if (senderJid === null) return null;
 
   const tsSec = toUnixSeconds(raw.messageTimestamp);
   const messageTs = new Date(tsSec * 1000).toISOString();
@@ -224,6 +225,24 @@ function extractContent(
 }
 
 // ---- helpers --------------------------------------------------------------
+
+// Returns null when we can't attribute the sender (outgoing message before selfJid is known).
+// Caller should skip the message in that case rather than emit a misattributed event.
+function resolveSenderJid(p: {
+  isGroup: boolean;
+  fromMe: boolean;
+  chatJid: string;
+  participant: string | null;
+  selfJid: string | undefined;
+}): string | null {
+  if (p.isGroup) {
+    if (p.participant) return p.participant;
+    if (p.fromMe) return p.selfJid ?? null;
+    return p.chatJid;
+  }
+  if (p.fromMe) return p.selfJid ?? null;
+  return p.chatJid;
+}
 
 // Baileys uses `number | Long | null | undefined` for protobuf 64-bit fields.
 // We accept both shapes structurally to avoid pulling in the `long` package.
