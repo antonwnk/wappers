@@ -9,6 +9,7 @@ import {
   isJidGroup,
   type ConnectionState,
   type WAMessage,
+  type WAVersion,
   type proto,
 } from "baileys";
 import type { Logger } from "pino";
@@ -50,6 +51,15 @@ export class Session {
   private reconnectAttempts = 0;
   private reconnectTimer: NodeJS.Timeout | undefined;
   private stopped = false;
+  // WhatsApp Web client version we masquerade as. Fetched at most once per
+  // Session lifetime, then committed (success or failure) so reconnects never
+  // re-fetch — a stalled upstream would otherwise turn every transient
+  // disconnect into a blocked reconnect, and a newly-published incompatible
+  // version could push us into a permanent reject loop. On fetch failure we
+  // leave waVersion undefined and omit `version` from makeWASocket; Baileys
+  // falls back to its bundled default (node_modules/baileys/lib/Defaults).
+  private waVersion: WAVersion | undefined;
+  private waVersionAttempted = false;
 
   constructor(cfg: SessionConfig) {
     this.id = cfg.id;
@@ -119,11 +129,20 @@ export class Session {
   private async connect(): Promise<void> {
     this.status = "connecting";
     const { state, saveCreds } = await loadAuthStore(this.cfg.dataDir, this.id);
-    const { version } = await fetchLatestBaileysVersion();
-    this.log.info({ waVersion: version.join(".") }, "connecting to WhatsApp");
+
+    if (!this.waVersionAttempted) {
+      this.waVersionAttempted = true;
+      try {
+        const { version } = await fetchLatestBaileysVersion();
+        this.waVersion = version;
+        this.log.info({ waVersion: version.join(".") }, "fetched WA client version");
+      } catch (err) {
+        this.log.warn({ err }, "WA version fetch failed — using Baileys bundled default for this session lifetime");
+      }
+    }
 
     const sock = makeWASocket({
-      version,
+      ...(this.waVersion ? { version: this.waVersion } : {}),
       auth: state,
       // Baileys uses its own pino-compatible logger interface; structurally identical at runtime.
       logger: loggerFor(`baileys:${this.id}`) as never,
@@ -188,12 +207,22 @@ export class Session {
   }
 
   private scheduleReconnect(): void {
+    if (this.stopped) return;
     this.reconnectAttempts += 1;
     const exp = Math.min(this.reconnectAttempts, 5);
     const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** exp);
     this.log.info({ attempt: this.reconnectAttempts, delayMs: delay }, "scheduling reconnect");
     this.reconnectTimer = setTimeout(() => {
-      this.connect().catch((err) => this.log.error({ err }, "reconnect failed"));
+      this.connect().catch((err) => {
+        // connect() throws never reach onConnectionUpdate('close'), so without
+        // this re-schedule a single failure (DNS hiccup at the wrong moment,
+        // auth-store read error, etc.) leaves the session permanently dead.
+        // Delay is capped at 30s so a persistent fault is throttled, not a
+        // tight loop.
+        this.log.error({ err, attempt: this.reconnectAttempts }, "reconnect connect() threw — re-scheduling");
+        this.status = "closed";
+        if (!this.stopped) this.scheduleReconnect();
+      });
     }, delay);
   }
 
